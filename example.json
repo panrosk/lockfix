@@ -1,0 +1,60 @@
+{
+  "root": "/Users/oscarfuentes/allianz",
+  "fixBranchTemplate": "fix/{projectName}-vulnerabilities",
+  "baseBranch": "develop",
+  "packageManager": { "npm": { "npmrcTemplate": null, "registry": null } },
+  "gitUser": {
+    "name": "FUENTES, Oscar",
+    "email": "oscar.fuentes.ext@allianz-trade.com",
+    "username": "ofuentes"
+  },
+  "scmConfig": {
+    "provider": "gitlab",
+    "url": null,
+    "token": null,
+    "create_merge_request": true,
+    "target_branch": "develop"
+  },
+  "projects": [
+    {
+      "name": "generic-login-api",
+      "path": "generic-login-api",
+      "packageManager": { "npm": { "npmrcTemplate": null, "registry": null } },
+      "baseBranch": "develop",
+      "commands": {
+        "install": "npm install",
+        "test": "npm test",
+        "build": "npm run build"
+      },
+      "packages": [
+        {
+          "name": "fast-xml-parser",
+          "targetVersion": "5.3.5",
+          "updatePolicy": "exact",
+          "scope": "direct",
+          "dependencyType": "dependency",
+          "required": true,
+          "reason": "security-fix"
+        },
+        {
+          "name": "lodash",
+          "targetVersion": "4.17.23",
+          "updatePolicy": "exact",
+          "scope": "direct",
+          "dependencyType": "dependency",
+          "required": true,
+          "reason": "security-fix"
+        },
+        {
+          "name": "axios",
+          "targetVersion": "1.13.5",
+          "updatePolicy": "minimum",
+          "scope": "direct",
+          "dependencyType": "dependency",
+          "required": false,
+          "reason": "security-fix"
+        }
+      ]
+    }
+  ]
+}
