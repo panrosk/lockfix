@@ -23,7 +23,11 @@ pub struct Git {
 
 impl Git {
     /// Open an existing git repository at the given path.
-    pub fn open(project_path: &Path, author_name: &str, author_email: &str) -> Result<Self, GitError> {
+    pub fn open(
+        project_path: &Path,
+        author_name: &str,
+        author_email: &str,
+    ) -> Result<Self, GitError> {
         let repo = Repository::open(project_path).map_err(|e| GitError::Open {
             path: project_path.display().to_string(),
             source: e,
@@ -58,10 +62,7 @@ impl Git {
     pub fn checkout_and_reset(&self, branch: &str) -> Result<(), GitError> {
         // find origin/<branch> reference
         let origin_ref = format!("refs/remotes/origin/{branch}");
-        let origin_commit = self
-            .repo
-            .find_reference(&origin_ref)?
-            .peel_to_commit()?;
+        let origin_commit = self.repo.find_reference(&origin_ref)?.peel_to_commit()?;
 
         // checkout the local branch (create if needed)
         let local_ref = format!("refs/heads/{branch}");
@@ -105,14 +106,8 @@ impl Git {
         let sig = Signature::now(&self.author_name, &self.author_email)?;
         let parent = self.repo.head()?.peel_to_commit()?;
 
-        self.repo.commit(
-            Some("HEAD"),
-            &sig,
-            &sig,
-            message,
-            &tree,
-            &[&parent],
-        )?;
+        self.repo
+            .commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent])?;
 
         Ok(())
     }

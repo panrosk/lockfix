@@ -12,16 +12,50 @@ pub use npm::Npm;
 pub use pnpm::Pnpm;
 pub use yarn::Yarn;
 
-use crate::config::{Commands, PackageManager as ConfigPackageManager};
+use crate::config::{
+    Commands, DependencyScope, DependencyType, PackageManager as ConfigPackageManager, UpdatePolicy,
+};
 
-/// Newtype representing a package version string.
-/// Kept as a newtype so version-comparison and semver logic can be added later.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Version(pub String);
 
 impl Version {
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    fn parse_parts(&self) -> Vec<u64> {
+        let clean = self
+            .0
+            .trim_start_matches(|c| c == 'v' || c == '^' || c == '~');
+        clean.split('.').filter_map(|s| s.parse().ok()).collect()
+    }
+
+    pub fn cmp_versions(&self, other: &Version) -> std::cmp::Ordering {
+        let self_parts = self.parse_parts();
+        let other_parts = other.parse_parts();
+
+        let max_len = self_parts.len().max(other_parts.len());
+        for i in 0..max_len {
+            let a = self_parts.get(i).copied().unwrap_or(0);
+            let b = other_parts.get(i).copied().unwrap_or(0);
+            match a.cmp(&b) {
+                std::cmp::Ordering::Equal => continue,
+                other => return other,
+            }
+        }
+        std::cmp::Ordering::Equal
+    }
+
+    pub fn satisfies(&self, target: &Version, policy: &UpdatePolicy) -> bool {
+        match policy {
+            UpdatePolicy::Minimum => self.cmp_versions(target) != std::cmp::Ordering::Less,
+            UpdatePolicy::Exact => self.cmp_versions(target) == std::cmp::Ordering::Equal,
+        }
+    }
+
+    pub fn is_downgrade(&self, target: &Version) -> bool {
+        self.cmp_versions(target) == std::cmp::Ordering::Greater
     }
 }
 
@@ -43,21 +77,14 @@ impl From<&str> for Version {
     }
 }
 
-/// A single installation of a package found in the lockfile.
 pub struct PackageInstance {
     pub path: String,
     pub version: Version,
 }
 
-/// Every package manager must implement this trait so the plan runner can
-/// resolve lockfile information uniformly regardless of the PM.
 pub trait LockfileDriver {
-    /// Returns all instances (path + version) of a package found anywhere in
-    /// the lockfile, including nested copies under other packages.
     fn get_all_instances(&self, project_path: &Path, name: &str) -> Vec<PackageInstance>;
 
-    /// Returns the top-level resolved version of a package derived from
-    /// get_all_instances — no need to override this in each implementation.
     fn get_version(&self, project_path: &Path, name: &str) -> Option<Version> {
         let top_level = format!("node_modules/{name}");
         self.get_all_instances(project_path, name)
@@ -67,8 +94,69 @@ pub trait LockfileDriver {
     }
 }
 
-/// Runtime wrapper enum that bridges config::PackageManager (serializable)
-/// to actual package manager behaviour (lockfile detection, binary checks, commands).
+#[derive(Debug, Clone)]
+pub struct AuthConfig {
+    pub auth_template: Option<String>,
+    pub registry: Option<String>,
+    pub auth_type: String,
+}
+
+pub struct ApplyContext<'a> {
+    pub project_path: &'a Path,
+    pub package: &'a str,
+    pub target_version: &'a str,
+    pub dependency_type: DependencyType,
+    pub update_policy: UpdatePolicy,
+    pub scope: DependencyScope,
+    pub auth_config: Option<AuthConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ApplyResult {
+    pub package: String,
+    pub target_version: String,
+    pub audit_fix_ran: bool,
+    pub audit_fix_success: bool,
+    pub version_matched: bool,
+    pub lockfile_deleted: bool,
+    pub node_modules_deleted: bool,
+    pub update_ran: bool,
+    pub final_status: ApplyStatus,
+    pub error_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApplyStatus {
+    Success,
+    VersionMismatch,
+    PartialSuccess,
+    PlannedError,
+}
+
+pub trait ApplyDriver {
+    fn apply_update(&self, ctx: &ApplyContext) -> Result<ApplyResult, ApplyError>;
+
+    fn audit_fix(&self, project_path: &Path) -> Option<Result<(), ApplyError>>;
+
+    fn supports_audit_fix(&self) -> bool;
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ApplyError {
+    #[error("failed to run command '{command}' in '{path}': {message}")]
+    CommandFailed {
+        command: String,
+        path: String,
+        message: String,
+    },
+
+    #[error("failed to read package.json: {0}")]
+    PackageJsonRead(#[from] package_json::PackageJsonError),
+
+    #[error("failed to write package.json: {0}")]
+    PackageJsonWrite(String),
+}
+
 pub enum PackageManagerKind {
     Npm(Npm),
     Yarn(Yarn),
@@ -98,6 +186,26 @@ impl PackageManagerKind {
             } => Self::Pnpm(Pnpm {
                 npmrc_template: npmrc_template.clone(),
                 registry: registry.clone(),
+            }),
+        }
+    }
+
+    pub fn get_auth_config(&self) -> Option<AuthConfig> {
+        match self {
+            Self::Npm(npm) => Some(AuthConfig {
+                auth_template: npm.npmrc_template.clone(),
+                registry: npm.registry.clone(),
+                auth_type: "npmrc".to_string(),
+            }),
+            Self::Yarn(yarn) => Some(AuthConfig {
+                auth_template: yarn.yarnrc_template.clone(),
+                registry: yarn.registry.clone(),
+                auth_type: "yarnrc".to_string(),
+            }),
+            Self::Pnpm(pnpm) => Some(AuthConfig {
+                auth_template: pnpm.npmrc_template.clone(),
+                registry: pnpm.registry.clone(),
+                auth_type: "npmrc".to_string(),
             }),
         }
     }
@@ -149,6 +257,32 @@ impl LockfileDriver for PackageManagerKind {
             Self::Npm(n) => n.get_all_instances(project_path, name),
             Self::Yarn(y) => y.get_all_instances(project_path, name),
             Self::Pnpm(p) => p.get_all_instances(project_path, name),
+        }
+    }
+}
+
+impl ApplyDriver for PackageManagerKind {
+    fn apply_update(&self, ctx: &ApplyContext) -> Result<ApplyResult, ApplyError> {
+        match self {
+            Self::Npm(n) => n.apply_update(ctx),
+            Self::Yarn(y) => y.apply_update(ctx),
+            Self::Pnpm(p) => p.apply_update(ctx),
+        }
+    }
+
+    fn audit_fix(&self, project_path: &Path) -> Option<Result<(), ApplyError>> {
+        match self {
+            Self::Npm(n) => n.audit_fix(project_path),
+            Self::Yarn(y) => y.audit_fix(project_path),
+            Self::Pnpm(p) => p.audit_fix(project_path),
+        }
+    }
+
+    fn supports_audit_fix(&self) -> bool {
+        match self {
+            Self::Npm(n) => n.supports_audit_fix(),
+            Self::Yarn(y) => y.supports_audit_fix(),
+            Self::Pnpm(p) => p.supports_audit_fix(),
         }
     }
 }

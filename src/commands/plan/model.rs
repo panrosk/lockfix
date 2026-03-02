@@ -69,16 +69,12 @@ pub struct PackageInstance {
     pub version: String,
 }
 
-/// What the tool intends to do for a given package.
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "lowercase")]
 pub enum PlannedAction {
-    /// Package found in manifest, will be updated to target version.
     Update,
-    /// Package not found in manifest, will be added.
     Add,
-    /// Package already at target version, nothing to do.
     Skip,
-    /// Action cannot be determined without inspecting the project first.
     Pending,
+    Error { reason: String },
 }

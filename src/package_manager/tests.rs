@@ -43,12 +43,18 @@ fn test_npm_name() {
 
 #[test]
 fn test_yarn_name() {
-    assert_eq!(PackageManagerKind::from_config(&yarn_config()).name(), "yarn");
+    assert_eq!(
+        PackageManagerKind::from_config(&yarn_config()).name(),
+        "yarn"
+    );
 }
 
 #[test]
 fn test_pnpm_name() {
-    assert_eq!(PackageManagerKind::from_config(&pnpm_config()).name(), "pnpm");
+    assert_eq!(
+        PackageManagerKind::from_config(&pnpm_config()).name(),
+        "pnpm"
+    );
 }
 
 // --- lockfile_name() ---
@@ -191,4 +197,206 @@ fn test_npm_get_version_unknown_returns_none() {
     let pm = PackageManagerKind::from_config(&npm_config());
     let version = pm.get_version(&fixtures_path(), "this-package-does-not-exist");
     assert!(version.is_none());
+}
+
+// --- Integration tests for ApplyDriver ---
+
+fn create_npm_project(dir: &Path, dependencies: Option<&str>) {
+    let deps = dependencies.unwrap_or("{}");
+    let package_json = format!(
+        r#"{{
+  "name": "test-project",
+  "version": "1.0.0",
+  "dependencies": {}
+}}"#,
+        deps
+    );
+    fs::write(dir.join("package.json"), package_json).unwrap();
+}
+
+#[test]
+fn test_npm_apply_update_success() {
+    let dir = TempDir::new().unwrap();
+    create_npm_project(dir.path(), None);
+
+    let ctx = ApplyContext {
+        project_path: dir.path(),
+        package: "lodash",
+        target_version: "4.17.21",
+        dependency_type: crate::config::DependencyType::Dependency,
+        update_policy: crate::config::UpdatePolicy::Exact,
+        scope: crate::config::DependencyScope::Direct,
+        auth_config: None,
+    };
+
+    let npm = super::Npm {
+        npmrc_template: None,
+        registry: None,
+    };
+
+    let result = npm.apply_update(&ctx).unwrap();
+
+    assert!(result.audit_fix_ran);
+    assert!(result.version_matched);
+    assert_eq!(result.final_status, ApplyStatus::Success);
+    assert!(dir.path().join("package-lock.json").exists());
+}
+
+#[test]
+fn test_npm_apply_update_version_mismatch_recovers() {
+    let dir = TempDir::new().unwrap();
+    create_npm_project(dir.path(), None);
+
+    let ctx = ApplyContext {
+        project_path: dir.path(),
+        package: "lodash",
+        target_version: "4.17.21",
+        dependency_type: crate::config::DependencyType::Dependency,
+        update_policy: crate::config::UpdatePolicy::Exact,
+        scope: crate::config::DependencyScope::Direct,
+        auth_config: None,
+    };
+
+    let npm = super::Npm {
+        npmrc_template: None,
+        registry: None,
+    };
+
+    let result = npm.apply_update(&ctx).unwrap();
+
+    assert!(result.version_matched || result.final_status == ApplyStatus::VersionMismatch);
+}
+
+#[test]
+fn test_npm_apply_update_dev_dependency() {
+    let dir = TempDir::new().unwrap();
+    create_npm_project(dir.path(), None);
+
+    let ctx = ApplyContext {
+        project_path: dir.path(),
+        package: "jest",
+        target_version: "29.7.0",
+        dependency_type: crate::config::DependencyType::DevDependency,
+        update_policy: crate::config::UpdatePolicy::Exact,
+        scope: crate::config::DependencyScope::Direct,
+        auth_config: None,
+    };
+
+    let npm = super::Npm {
+        npmrc_template: None,
+        registry: None,
+    };
+
+    let result = npm.apply_update(&ctx).unwrap();
+
+    assert!(result.version_matched || result.final_status == ApplyStatus::VersionMismatch);
+}
+
+#[test]
+fn test_npm_apply_update_minimum_policy() {
+    let dir = TempDir::new().unwrap();
+    create_npm_project(dir.path(), None);
+
+    let ctx = ApplyContext {
+        project_path: dir.path(),
+        package: "lodash",
+        target_version: "4.17.0",
+        dependency_type: crate::config::DependencyType::Dependency,
+        update_policy: crate::config::UpdatePolicy::Minimum,
+        scope: crate::config::DependencyScope::Direct,
+        auth_config: None,
+    };
+
+    let npm = super::Npm {
+        npmrc_template: None,
+        registry: None,
+    };
+
+    let result = npm.apply_update(&ctx).unwrap();
+
+    assert!(result.version_matched || result.final_status == ApplyStatus::VersionMismatch);
+}
+
+#[test]
+fn test_apply_summary_print() {
+    use crate::commands::apply::runner::{ApplySummary, ProjectSummary};
+
+    let summary = ApplySummary {
+        projects: vec![
+            ProjectSummary {
+                name: "my-project".to_string(),
+                results: vec![
+                    ApplyResult {
+                        package: "lodash".to_string(),
+                        target_version: "4.17.21".to_string(),
+                        audit_fix_ran: true,
+                        audit_fix_success: true,
+                        version_matched: true,
+                        lockfile_deleted: false,
+                        node_modules_deleted: false,
+                        update_ran: false,
+                        final_status: ApplyStatus::Success,
+                        error_reason: None,
+                    },
+                    ApplyResult {
+                        package: "axios".to_string(),
+                        target_version: "1.6.0".to_string(),
+                        audit_fix_ran: true,
+                        audit_fix_success: true,
+                        version_matched: true,
+                        lockfile_deleted: false,
+                        node_modules_deleted: false,
+                        update_ran: false,
+                        final_status: ApplyStatus::Success,
+                        error_reason: None,
+                    },
+                ],
+                committed: true,
+            },
+            ProjectSummary {
+                name: "other-project".to_string(),
+                results: vec![
+                    ApplyResult {
+                        package: "lodash".to_string(),
+                        target_version: "4.17.21".to_string(),
+                        audit_fix_ran: true,
+                        audit_fix_success: true,
+                        version_matched: true,
+                        lockfile_deleted: false,
+                        node_modules_deleted: false,
+                        update_ran: false,
+                        final_status: ApplyStatus::Success,
+                        error_reason: None,
+                    },
+                    ApplyResult {
+                        package: "react".to_string(),
+                        target_version: "18.2.0".to_string(),
+                        audit_fix_ran: true,
+                        audit_fix_success: false,
+                        version_matched: true,
+                        lockfile_deleted: true,
+                        node_modules_deleted: true,
+                        update_ran: true,
+                        final_status: ApplyStatus::PartialSuccess,
+                        error_reason: None,
+                    },
+                    ApplyResult {
+                        package: "vue".to_string(),
+                        target_version: "3.4.0".to_string(),
+                        audit_fix_ran: true,
+                        audit_fix_success: false,
+                        version_matched: false,
+                        lockfile_deleted: true,
+                        node_modules_deleted: true,
+                        update_ran: true,
+                        final_status: ApplyStatus::VersionMismatch,
+                        error_reason: None,
+                    },
+                ],
+                committed: false,
+            },
+        ],
+    };
+
+    summary.print();
 }

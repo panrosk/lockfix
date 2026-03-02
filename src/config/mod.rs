@@ -12,7 +12,6 @@ pub enum ConfigError {
     #[error("project '{0}' has no package_manager and no global package_manager is set")]
     MissingPackageManager(String),
 
-
     #[error("project path does not exist: {0}")]
     ProjectDoesNotExist(String),
 
@@ -164,7 +163,7 @@ pub enum UpdatePolicy {
     Minimum,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum DependencyScope {
     Direct,

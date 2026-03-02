@@ -2,11 +2,15 @@ mod commands;
 mod config;
 mod package_manager;
 mod scm;
+mod utils;
 
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "lockfix", about = "Generate an update plan and apply dependency upgrades from a lock file")]
+#[command(
+    name = "lockfix",
+    about = "Generate an update plan and apply dependency upgrades from a lock file"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -35,14 +39,14 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Plan { config } => {
-            match commands::plan::runner_par::run(&config) {
-                Ok(plan) => println!("{}", serde_json::to_string_pretty(&plan).unwrap()),
-                Err(e) => eprintln!("error: {e}"),
-            }
-        }
+        Commands::Plan { config } => match commands::plan::runner_par::run(&config) {
+            Ok(plan) => println!("{}", serde_json::to_string_pretty(&plan).unwrap()),
+            Err(e) => eprintln!("error: {e}"),
+        },
         Commands::Apply { config, plan } => {
-            commands::apply::runner::run(config.as_deref(), plan.as_deref());
+            if let Err(e) = commands::apply::runner::run(config.as_deref(), plan.as_deref()) {
+                eprintln!("error: {e}");
+            }
         }
     }
 }

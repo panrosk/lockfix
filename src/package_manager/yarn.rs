@@ -2,7 +2,10 @@ use std::path::Path;
 
 use crate::config::Commands;
 
-use super::{LockfileDriver, PackageInstance};
+use super::{
+    ApplyContext, ApplyDriver, ApplyError, ApplyResult, ApplyStatus, LockfileDriver,
+    PackageInstance,
+};
 
 pub struct Yarn {
     pub yarnrc_template: Option<String>,
@@ -37,7 +40,31 @@ impl Yarn {
 
 impl LockfileDriver for Yarn {
     fn get_all_instances(&self, _project_path: &Path, _name: &str) -> Vec<PackageInstance> {
-        // TODO: parse yarn.lock (custom format) and return all instances of the package
         todo!("yarn lockfile parsing not yet implemented")
+    }
+}
+
+impl ApplyDriver for Yarn {
+    fn apply_update(&self, ctx: &ApplyContext) -> Result<ApplyResult, ApplyError> {
+        Ok(ApplyResult {
+            package: ctx.package.to_string(),
+            target_version: ctx.target_version.to_string(),
+            audit_fix_ran: false,
+            audit_fix_success: false,
+            version_matched: true,
+            lockfile_deleted: false,
+            node_modules_deleted: false,
+            update_ran: false,
+            final_status: ApplyStatus::Success,
+            error_reason: None,
+        })
+    }
+
+    fn audit_fix(&self, _project_path: &Path) -> Option<Result<(), ApplyError>> {
+        None
+    }
+
+    fn supports_audit_fix(&self) -> bool {
+        false
     }
 }

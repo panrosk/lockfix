@@ -2,10 +2,10 @@ use std::path::PathBuf;
 
 use chrono::Utc;
 
-use super::model::{PackageInstance, PackagePlan, Plan, PlannedAction, ProjectPlan, PlanSummary};
-use crate::config::{Config, ConfigError, DependencyScope};
-use crate::package_manager::{LockfileDriver, PackageManagerKind};
+use super::model::{PackageInstance, PackagePlan, Plan, PlanSummary, PlannedAction, ProjectPlan};
+use crate::config::{Config, ConfigError, DependencyScope, UpdatePolicy};
 use crate::package_manager::package_json::PackageJson;
+use crate::package_manager::{LockfileDriver, PackageManagerKind, Version};
 
 pub fn run(config_path: &str) -> Result<Plan, ConfigError> {
     let config = Config::from_file(config_path)?;
@@ -90,6 +90,33 @@ pub fn run(config_path: &str) -> Result<Plan, ConfigError> {
 
                     let action = if instances.is_empty() {
                         PlannedAction::Add
+                    } else if let Some(ref current) = current_version {
+                        let current_ver = Version::from(current.as_str());
+                        let target_ver = Version::from(pkg.target_version.as_str());
+
+                        match pkg.update_policy {
+                            UpdatePolicy::Minimum => {
+                                if current_ver.satisfies(&target_ver, &UpdatePolicy::Minimum) {
+                                    PlannedAction::Skip
+                                } else {
+                                    PlannedAction::Update
+                                }
+                            }
+                            UpdatePolicy::Exact => {
+                                if current_ver.satisfies(&target_ver, &UpdatePolicy::Exact) {
+                                    PlannedAction::Skip
+                                } else if current_ver.is_downgrade(&target_ver) {
+                                    PlannedAction::Error {
+                                        reason: format!(
+                                            "downgrade not allowed for exact policy: {} -> {}",
+                                            current, pkg.target_version
+                                        ),
+                                    }
+                                } else {
+                                    PlannedAction::Update
+                                }
+                            }
+                        }
                     } else {
                         PlannedAction::Update
                     };

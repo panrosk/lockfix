@@ -3,10 +3,10 @@ use std::path::PathBuf;
 use chrono::Utc;
 use rayon::prelude::*;
 
-use super::model::{PackageInstance, PackagePlan, Plan, PlannedAction, ProjectPlan, PlanSummary};
-use crate::config::{Config, ConfigError, DependencyScope};
+use super::model::{PackageInstance, PackagePlan, Plan, PlanSummary, PlannedAction, ProjectPlan};
+use crate::config::{Config, ConfigError, DependencyScope, UpdatePolicy};
 use crate::package_manager::package_json::PackageJson;
-use crate::package_manager::{LockfileDriver, PackageManagerKind};
+use crate::package_manager::{LockfileDriver, PackageManagerKind, Version};
 
 /// Parallel version of the plan runner.
 ///
@@ -102,6 +102,33 @@ pub fn run(config_path: &str) -> Result<Plan, ConfigError> {
 
                     let action = if instances.is_empty() {
                         PlannedAction::Add
+                    } else if let Some(ref current) = current_version {
+                        let current_ver = Version::from(current.as_str());
+                        let target_ver = Version::from(pkg.target_version.as_str());
+
+                        match pkg.update_policy {
+                            UpdatePolicy::Minimum => {
+                                if current_ver.satisfies(&target_ver, &UpdatePolicy::Minimum) {
+                                    PlannedAction::Skip
+                                } else {
+                                    PlannedAction::Update
+                                }
+                            }
+                            UpdatePolicy::Exact => {
+                                if current_ver.satisfies(&target_ver, &UpdatePolicy::Exact) {
+                                    PlannedAction::Skip
+                                } else if current_ver.is_downgrade(&target_ver) {
+                                    PlannedAction::Error {
+                                        reason: format!(
+                                            "downgrade not allowed for exact policy: {} -> {}",
+                                            current, pkg.target_version
+                                        ),
+                                    }
+                                } else {
+                                    PlannedAction::Update
+                                }
+                            }
+                        }
                     } else {
                         PlannedAction::Update
                     };
@@ -162,14 +189,8 @@ mod tests {
     fn resolved_config_path() -> tempfile::NamedTempFile {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let template = std::fs::read_to_string(manifest_dir.join("fixtures/bench.json")).unwrap();
-        let content = template.replace(
-            "CARGO_MANIFEST_DIR",
-            manifest_dir.to_str().unwrap(),
-        );
-        let tmp = tempfile::Builder::new()
-            .suffix(".json")
-            .tempfile()
-            .unwrap();
+        let content = template.replace("CARGO_MANIFEST_DIR", manifest_dir.to_str().unwrap());
+        let tmp = tempfile::Builder::new().suffix(".json").tempfile().unwrap();
         std::fs::write(tmp.path(), content).unwrap();
         tmp
     }
@@ -182,8 +203,8 @@ mod tests {
         let seq = crate::commands::plan::runner::run(path).unwrap();
         let par = run(path).unwrap();
 
-        assert_eq!(seq.summary.total_projects,    par.summary.total_projects);
-        assert_eq!(seq.summary.total_packages,    par.summary.total_packages);
+        assert_eq!(seq.summary.total_projects, par.summary.total_projects);
+        assert_eq!(seq.summary.total_packages, par.summary.total_packages);
         assert_eq!(seq.summary.required_packages, par.summary.required_packages);
     }
 
@@ -231,9 +252,19 @@ mod tests {
             p_pkgs.sort_by(|a, b| a.name.cmp(&b.name));
 
             for (sp, pp) in s_pkgs.iter().zip(p_pkgs.iter()) {
-                assert_eq!(sp.name,            pp.name,            "pkg name mismatch in {}", s.name);
-                assert_eq!(sp.current_version, pp.current_version, "version mismatch for {} in {}", sp.name, s.name);
-                assert_eq!(sp.instances.len(), pp.instances.len(), "instance count mismatch for {} in {}", sp.name, s.name);
+                assert_eq!(sp.name, pp.name, "pkg name mismatch in {}", s.name);
+                assert_eq!(
+                    sp.current_version, pp.current_version,
+                    "version mismatch for {} in {}",
+                    sp.name, s.name
+                );
+                assert_eq!(
+                    sp.instances.len(),
+                    pp.instances.len(),
+                    "instance count mismatch for {} in {}",
+                    sp.name,
+                    s.name
+                );
             }
         }
     }
