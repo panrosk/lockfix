@@ -1,11 +1,11 @@
 {
-  "root": "/Users/oscarfuentes/allianz",
+  "root": "/Users/oscarfuentes/opensource",
   "fixBranchTemplate": "fix/{projectName}-vulnerabilities",
   "baseBranch": "develop",
   "packageManager": { "npm": { "npmrcTemplate": null, "registry": null } },
   "gitUser": {
     "name": "FUENTES, Oscar",
-    "email": "oscar.fuentes.ext@allianz-trade.com",
+    "email": "work@oscarfuentes.xyz",
     "username": "ofuentes"
   },
   "scmConfig": {
@@ -17,8 +17,8 @@
   },
   "projects": [
     {
-      "name": "generic-login-api",
-      "path": "generic-login-api",
+      "name": "generic-api",
+      "path": "generic-api",
       "packageManager": { "npm": { "npmrcTemplate": null, "registry": null } },
       "baseBranch": "develop",
       "commands": {
