@@ -19,14 +19,15 @@ pub struct Git {
     repo: Repository,
     author_name: String,
     author_email: String,
+    token: Option<String>,
 }
 
 impl Git {
-    /// Open an existing git repository at the given path.
     pub fn open(
         project_path: &Path,
         author_name: &str,
         author_email: &str,
+        token: Option<&str>,
     ) -> Result<Self, GitError> {
         let repo = Repository::open(project_path).map_err(|e| GitError::Open {
             path: project_path.display().to_string(),
@@ -37,16 +38,21 @@ impl Git {
             repo,
             author_name: author_name.to_string(),
             author_email: author_email.to_string(),
+            token: token.map(|s| s.to_string()),
         })
     }
 
-    /// Fetch latest changes from origin.
     pub fn fetch(&self, branch: &str) -> Result<(), GitError> {
         let mut remote = self.repo.find_remote("origin")?;
 
         let mut callbacks = RemoteCallbacks::new();
-        callbacks.credentials(|_url, username, _allowed| {
-            Cred::ssh_key_from_agent(username.unwrap_or("git"))
+        let token = self.token.clone();
+        callbacks.credentials(move |_url, username, _allowed| {
+            if let Some(ref t) = token {
+                Cred::userpass_plaintext(&"oauth2", t)
+            } else {
+                Cred::ssh_key_from_agent(username.unwrap_or("git"))
+            }
         });
 
         let mut fetch_opts = git2::FetchOptions::new();
@@ -112,13 +118,17 @@ impl Git {
         Ok(())
     }
 
-    /// Push a branch to origin.
     pub fn push(&self, branch_name: &str) -> Result<(), GitError> {
         let mut remote = self.repo.find_remote("origin")?;
 
         let mut callbacks = RemoteCallbacks::new();
-        callbacks.credentials(|_url, username, _allowed| {
-            Cred::ssh_key_from_agent(username.unwrap_or("git"))
+        let token = self.token.clone();
+        callbacks.credentials(move |_url, username, _allowed| {
+            if let Some(ref t) = token {
+                Cred::userpass_plaintext(&"oauth2", t)
+            } else {
+                Cred::ssh_key_from_agent(username.unwrap_or("git"))
+            }
         });
 
         let mut push_opts = git2::PushOptions::new();
@@ -128,5 +138,13 @@ impl Git {
         remote.push(&[&refspec], Some(&mut push_opts))?;
 
         Ok(())
+    }
+
+    pub fn get_remote_url(&self) -> Result<String, GitError> {
+        let remote = self.repo.find_remote("origin")?;
+        let url = remote
+            .url()
+            .ok_or_else(|| git2::Error::from_str("remote has no URL"))?;
+        Ok(url.to_string())
     }
 }

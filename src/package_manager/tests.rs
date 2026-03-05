@@ -215,106 +215,116 @@ fn create_npm_project(dir: &Path, dependencies: Option<&str>) {
 }
 
 #[test]
-fn test_npm_apply_update_success() {
+fn test_npm_apply_project_updates_success() {
     let dir = TempDir::new().unwrap();
     create_npm_project(dir.path(), None);
 
-    let ctx = ApplyContext {
-        project_path: dir.path(),
-        package: "lodash",
-        target_version: "4.17.21",
+    let packages = vec![PackageUpdateRequest {
+        package: "lodash".to_string(),
+        target_version: "4.17.21".to_string(),
         dependency_type: crate::config::DependencyType::Dependency,
         update_policy: crate::config::UpdatePolicy::Exact,
         scope: crate::config::DependencyScope::Direct,
-        auth_config: None,
-    };
+    }];
 
     let npm = super::Npm {
         npmrc_template: None,
         registry: None,
     };
 
-    let result = npm.apply_update(&ctx).unwrap();
+    let result = npm
+        .apply_project_updates(dir.path(), &packages, None)
+        .unwrap();
 
     assert!(result.audit_fix_ran);
-    assert!(result.version_matched);
-    assert_eq!(result.final_status, ApplyStatus::Success);
+    assert!(!result.results.is_empty());
+    assert!(result.results[0].version_matched);
+    assert_eq!(result.results[0].final_status, ApplyStatus::Success);
     assert!(dir.path().join("package-lock.json").exists());
 }
 
 #[test]
-fn test_npm_apply_update_version_mismatch_recovers() {
+fn test_npm_apply_project_updates_version_mismatch_recovers() {
     let dir = TempDir::new().unwrap();
     create_npm_project(dir.path(), None);
 
-    let ctx = ApplyContext {
-        project_path: dir.path(),
-        package: "lodash",
-        target_version: "4.17.21",
+    let packages = vec![PackageUpdateRequest {
+        package: "lodash".to_string(),
+        target_version: "4.17.21".to_string(),
         dependency_type: crate::config::DependencyType::Dependency,
         update_policy: crate::config::UpdatePolicy::Exact,
         scope: crate::config::DependencyScope::Direct,
-        auth_config: None,
-    };
+    }];
 
     let npm = super::Npm {
         npmrc_template: None,
         registry: None,
     };
 
-    let result = npm.apply_update(&ctx).unwrap();
+    let result = npm
+        .apply_project_updates(dir.path(), &packages, None)
+        .unwrap();
 
-    assert!(result.version_matched || result.final_status == ApplyStatus::VersionMismatch);
+    assert!(
+        result.results[0].version_matched
+            || result.results[0].final_status == ApplyStatus::VersionMismatch
+    );
 }
 
 #[test]
-fn test_npm_apply_update_dev_dependency() {
+fn test_npm_apply_project_updates_dev_dependency() {
     let dir = TempDir::new().unwrap();
     create_npm_project(dir.path(), None);
 
-    let ctx = ApplyContext {
-        project_path: dir.path(),
-        package: "jest",
-        target_version: "29.7.0",
+    let packages = vec![PackageUpdateRequest {
+        package: "jest".to_string(),
+        target_version: "29.7.0".to_string(),
         dependency_type: crate::config::DependencyType::DevDependency,
         update_policy: crate::config::UpdatePolicy::Exact,
         scope: crate::config::DependencyScope::Direct,
-        auth_config: None,
-    };
+    }];
 
     let npm = super::Npm {
         npmrc_template: None,
         registry: None,
     };
 
-    let result = npm.apply_update(&ctx).unwrap();
+    let result = npm
+        .apply_project_updates(dir.path(), &packages, None)
+        .unwrap();
 
-    assert!(result.version_matched || result.final_status == ApplyStatus::VersionMismatch);
+    assert!(
+        result.results[0].version_matched
+            || result.results[0].final_status == ApplyStatus::VersionMismatch
+    );
 }
 
 #[test]
-fn test_npm_apply_update_minimum_policy() {
+fn test_npm_apply_project_updates_minimum_policy() {
     let dir = TempDir::new().unwrap();
     create_npm_project(dir.path(), None);
 
-    let ctx = ApplyContext {
-        project_path: dir.path(),
-        package: "lodash",
-        target_version: "4.17.0",
+    let packages = vec![PackageUpdateRequest {
+        package: "lodash".to_string(),
+        target_version: "4.17.0".to_string(),
         dependency_type: crate::config::DependencyType::Dependency,
         update_policy: crate::config::UpdatePolicy::Minimum,
         scope: crate::config::DependencyScope::Direct,
-        auth_config: None,
-    };
+    }];
 
     let npm = super::Npm {
         npmrc_template: None,
         registry: None,
     };
 
-    let result = npm.apply_update(&ctx).unwrap();
+    let result = npm
+        .apply_project_updates(dir.path(), &packages, None)
+        .unwrap();
 
-    assert!(result.version_matched || result.final_status == ApplyStatus::VersionMismatch);
+    assert!(
+        result.results[0].version_matched
+            || result.results[0].final_status == ApplyStatus::VersionMismatch
+    );
 }
 
 #[test]

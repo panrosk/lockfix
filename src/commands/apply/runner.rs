@@ -3,12 +3,12 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 use crate::commands::plan::model::PlannedAction;
-use crate::config::{Config, ConfigError};
+use crate::config::{Config, ConfigError, ScmConfig};
 use crate::package_manager::{
-    package_json::PackageJson, ApplyContext, ApplyDriver, ApplyResult, ApplyStatus,
-    PackageManagerKind,
+    package_json::PackageJson, ApplyDriver, ApplyResult, ApplyStatus, PackageManagerKind,
+    PackageUpdateRequest,
 };
-use crate::scm::{Git, GitError};
+use crate::scm::{Git, GitError, GitLabClient, GitLabConfig};
 
 #[derive(Debug, Error)]
 pub enum ApplyError {
@@ -18,6 +18,9 @@ pub enum ApplyError {
     #[error("git error: {0}")]
     Git(#[from] GitError),
 
+    #[error("gitlab error: {0}")]
+    GitLab(#[from] crate::scm::GitLabError),
+
     #[error("package.json error: {0}")]
     PackageJsonRead(#[from] crate::package_manager::package_json::PackageJsonError),
 
@@ -26,9 +29,6 @@ pub enum ApplyError {
 
     #[error("no git user configured")]
     NoGitUser,
-
-    #[error("version mismatch for required package '{package}' in project '{project}'")]
-    VersionMismatch { project: String, package: String },
 
     #[error("failed to read plan file: {0}")]
     PlanRead(#[from] std::io::Error),
@@ -184,114 +184,84 @@ pub fn run(config_path: Option<&str>, plan_path: Option<&str>) -> Result<(), App
     }
 }
 
+fn is_local_mode(config: &Config) -> bool {
+    matches!(config.scm_config, Some(ScmConfig::Local))
+}
+
+fn get_token(config: &Config) -> Option<String> {
+    match &config.scm_config {
+        Some(ScmConfig::Gitlab { token, .. }) => {
+            token.clone().or_else(|| std::env::var("GITLAB_TOKEN").ok())
+        }
+        Some(ScmConfig::Github { token, .. }) => {
+            token.clone().or_else(|| std::env::var("GITHUB_TOKEN").ok())
+        }
+        _ => None,
+    }
+}
+
+fn get_gitlab_config(config: &Config) -> Option<GitLabConfig> {
+    match &config.scm_config {
+        Some(ScmConfig::Gitlab {
+            url,
+            token,
+            create_merge_request,
+            target_branch,
+        }) if *create_merge_request => {
+            let base_url = url
+                .clone()
+                .unwrap_or_else(|| "https://gitlab.com".to_string());
+            let resolved_token = token
+                .clone()
+                .or_else(|| std::env::var("GITLAB_TOKEN").ok())
+                .unwrap_or_default();
+            Some(GitLabConfig {
+                base_url,
+                token: resolved_token,
+                target_branch: target_branch.clone(),
+            })
+        }
+        _ => None,
+    }
+}
+
 fn run_from_config(config_path: &str) -> Result<(), ApplyError> {
+    eprintln!("[plan] generating plan from config: {}", config_path);
+    let plan = crate::commands::plan::runner::run(config_path)?;
+    eprintln!("[plan] found {} projects", plan.projects.len());
+    apply_plan(&plan, config_path)
+}
+
+fn apply_plan(
+    plan: &crate::commands::plan::model::Plan,
+    config_path: &str,
+) -> Result<(), ApplyError> {
+    eprintln!("[apply] loading config from: {}", config_path);
     let config = Config::from_file(config_path)?;
     let git_user = config.git_user.as_ref().ok_or(ApplyError::NoGitUser)?;
     let root_path = PathBuf::from(&config.root);
+    let local_mode = is_local_mode(&config);
+    let token = get_token(&config);
+    let gitlab_config = get_gitlab_config(&config);
+    eprintln!("[apply] root: {}", root_path.display());
+    eprintln!("[apply] local_mode: {}", local_mode);
     let mut summary = ApplySummary {
         projects: Vec::new(),
     };
 
-    for project in &config.projects {
-        let config_pm = project
-            .package_manager
-            .as_ref()
-            .or(config.package_manager.as_ref())
-            .unwrap();
+    for (idx, project_plan) in plan.projects.iter().enumerate() {
+        eprintln!();
+        eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        eprintln!(
+            "[{}/{}] {}",
+            idx + 1,
+            plan.projects.len(),
+            project_plan.name
+        );
+        eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-        let pm = PackageManagerKind::from_config(config_pm);
-        let project_path = resolve_project_path(&root_path, &project.path);
-
-        let base_branch = project
-            .base_branch
-            .clone()
-            .unwrap_or_else(|| config.base_branch.clone());
-
-        let fix_branch = config
-            .fix_branch_template
-            .replace("{projectName}", &project.name);
-
-        let git = Git::open(&project_path, &git_user.name, &git_user.email)?;
-        git.fetch(&base_branch)?;
-        git.checkout_and_reset(&base_branch)?;
-        git.create_and_checkout_branch(&fix_branch)?;
-
-        let mut pkg_json = PackageJson::from_path(&project_path)?;
-
-        for pkg in &project.packages {
-            pkg_json.set_version(&pkg.name, &pkg.target_version);
-        }
-
-        pkg_json.write(&project_path)?;
-
-        let mut results = Vec::new();
-
-        for pkg in &project.packages {
-            let ctx = ApplyContext {
-                project_path: &project_path,
-                package: &pkg.name,
-                target_version: &pkg.target_version,
-                dependency_type: pkg.dependency_type.clone(),
-                update_policy: pkg.update_policy.clone(),
-                scope: pkg.scope.clone(),
-                auth_config: None,
-            };
-
-            let result = pm.apply_update(&ctx)?;
-
-            if result.final_status == ApplyStatus::VersionMismatch && pkg.required {
-                summary.projects.push(ProjectSummary {
-                    name: project.name.clone(),
-                    results: results.clone(),
-                    committed: false,
-                });
-                summary.print();
-                return Err(ApplyError::VersionMismatch {
-                    project: project.name.clone(),
-                    package: pkg.name.clone(),
-                });
-            }
-
-            results.push(result);
-        }
-
-        let project_summary = ProjectSummary {
-            name: project.name.clone(),
-            results: results.clone(),
-            committed: false,
-        };
-
-        let all_success = project_summary.all_success();
-
-        if all_success {
-            let commit_message = format!("fix: update dependencies for {}", project.name);
-            git.stage_and_commit(&commit_message)?;
-            git.push(&fix_branch)?;
-        }
-
-        summary.projects.push(ProjectSummary {
-            committed: all_success,
-            ..project_summary
-        });
-    }
-
-    summary.print();
-    Ok(())
-}
-
-fn run_from_plan(plan_path: &str) -> Result<(), ApplyError> {
-    let content = std::fs::read_to_string(plan_path)?;
-    let plan: crate::commands::plan::model::Plan = serde_json::from_str(&content)?;
-
-    let config = Config::from_file(&plan.config_path)?;
-    let git_user = config.git_user.as_ref().ok_or(ApplyError::NoGitUser)?;
-    let root_path = PathBuf::from(&config.root);
-    let mut summary = ApplySummary {
-        projects: Vec::new(),
-    };
-
-    for project_plan in &plan.projects {
         let project_path = resolve_project_path(&root_path, &project_plan.path);
+        eprintln!("[git] project path: {}", project_path.display());
 
         let config_pm = config
             .package_manager
@@ -306,19 +276,37 @@ fn run_from_plan(plan_path: &str) -> Result<(), ApplyError> {
             .unwrap();
 
         let pm = PackageManagerKind::from_config(config_pm);
+        eprintln!("[git] package manager: {}", pm.name());
 
-        let git = Git::open(&project_path, &git_user.name, &git_user.email)?;
-        git.fetch(&project_plan.base_branch)?;
+        eprintln!("[git] opening repository...");
+        let git = Git::open(
+            &project_path,
+            &git_user.name,
+            &git_user.email,
+            token.as_deref(),
+        )?;
+        if !local_mode {
+            eprintln!("[git] fetching base branch: {}", project_plan.base_branch);
+            git.fetch(&project_plan.base_branch)?;
+        }
+        eprintln!(
+            "[git] checking out and resetting: {}",
+            project_plan.base_branch
+        );
         git.checkout_and_reset(&project_plan.base_branch)?;
+        eprintln!("[git] creating branch: {}", project_plan.fix_branch);
         git.create_and_checkout_branch(&project_plan.fix_branch)?;
 
+        eprintln!("[apply] reading package.json...");
         let mut pkg_json = PackageJson::from_path(&project_path)?;
         let mut results = Vec::new();
         let mut needs_commit = false;
+        let mut packages_to_update: Vec<PackageUpdateRequest> = Vec::new();
 
         for pkg in &project_plan.packages {
             match &pkg.action {
                 PlannedAction::Skip => {
+                    eprintln!("[apply] {} - skipping (already satisfied)", pkg.name);
                     results.push(ApplyResult {
                         package: pkg.name.clone(),
                         target_version: pkg.target_version.clone(),
@@ -333,6 +321,7 @@ fn run_from_plan(plan_path: &str) -> Result<(), ApplyError> {
                     });
                 }
                 PlannedAction::Error { reason } => {
+                    eprintln!("[apply] {} - error: {}", pkg.name, reason);
                     results.push(ApplyResult {
                         package: pkg.name.clone(),
                         target_version: pkg.target_version.clone(),
@@ -347,40 +336,39 @@ fn run_from_plan(plan_path: &str) -> Result<(), ApplyError> {
                     });
                 }
                 PlannedAction::Update | PlannedAction::Add | PlannedAction::Pending => {
+                    eprintln!(
+                        "[apply] {} {} -> {} ({:?})",
+                        pkg.name,
+                        pkg.current_version.as_deref().unwrap_or("none"),
+                        pkg.target_version,
+                        pkg.action
+                    );
                     pkg_json.set_version(&pkg.name, &pkg.target_version);
                     needs_commit = true;
 
-                    let ctx = ApplyContext {
-                        project_path: &project_path,
-                        package: &pkg.name,
-                        target_version: &pkg.target_version,
+                    packages_to_update.push(PackageUpdateRequest {
+                        package: pkg.name.clone(),
+                        target_version: pkg.target_version.clone(),
                         dependency_type: pkg.dependency_type.clone(),
                         update_policy: pkg.update_policy.clone(),
                         scope: pkg.scope.clone(),
-                        auth_config: None,
-                    };
-
-                    let result = pm.apply_update(&ctx)?;
-
-                    if result.final_status == ApplyStatus::VersionMismatch && pkg.required {
-                        summary.projects.push(ProjectSummary {
-                            name: project_plan.name.clone(),
-                            results: results.clone(),
-                            committed: false,
-                        });
-                        summary.print();
-                        return Err(ApplyError::VersionMismatch {
-                            project: project_plan.name.clone(),
-                            package: pkg.name.clone(),
-                        });
-                    }
-
-                    results.push(result);
+                    });
                 }
             }
         }
 
+        if !packages_to_update.is_empty() {
+            eprintln!(
+                "[apply] applying {} package updates in batch...",
+                packages_to_update.len()
+            );
+            let batch_result =
+                pm.apply_project_updates(&project_path, &packages_to_update, None)?;
+            results.extend(batch_result.results);
+        }
+
         if needs_commit {
+            eprintln!("[apply] writing package.json...");
             pkg_json.write(&project_path)?;
         }
 
@@ -394,8 +382,42 @@ fn run_from_plan(plan_path: &str) -> Result<(), ApplyError> {
 
         if all_success && needs_commit {
             let commit_message = format!("fix: update dependencies for {}", project_plan.name);
+            eprintln!("[git] staging and committing...");
             git.stage_and_commit(&commit_message)?;
-            git.push(&project_plan.fix_branch)?;
+            if !local_mode {
+                eprintln!(
+                    "[git] pushing branch '{}' to origin",
+                    project_plan.fix_branch
+                );
+                git.push(&project_plan.fix_branch)?;
+                eprintln!("[git] push completed successfully");
+
+                if let Some(ref gl_config) = gitlab_config {
+                    eprintln!("[gitlab] creating merge request...");
+                    let remote_url = git.get_remote_url()?;
+                    let project_path = GitLabClient::extract_project_path(&remote_url)?;
+                    let client = GitLabClient::new(gl_config.clone());
+                    let mr_title = format!("fix: update dependencies for {}", project_plan.name);
+                    match client.create_merge_request(
+                        &project_path,
+                        &project_plan.fix_branch,
+                        &mr_title,
+                    ) {
+                        Ok(mr_url) => {
+                            eprintln!("[gitlab] merge request created: {}", mr_url);
+                        }
+                        Err(e) => {
+                            eprintln!("[gitlab] failed to create merge request: {}", e);
+                        }
+                    }
+                }
+            } else {
+                eprintln!("[git] skipping push (local mode)");
+            }
+        } else if !all_success {
+            eprintln!("[git] skipping commit and push (not all packages succeeded)");
+        } else {
+            eprintln!("[git] skipping commit and push (no changes needed)");
         }
 
         summary.projects.push(ProjectSummary {
@@ -406,6 +428,12 @@ fn run_from_plan(plan_path: &str) -> Result<(), ApplyError> {
 
     summary.print();
     Ok(())
+}
+
+fn run_from_plan(plan_path: &str) -> Result<(), ApplyError> {
+    let content = std::fs::read_to_string(plan_path)?;
+    let plan: crate::commands::plan::model::Plan = serde_json::from_str(&content)?;
+    apply_plan(&plan, &plan.config_path)
 }
 
 fn resolve_project_path(root: &PathBuf, project_path: &str) -> PathBuf {

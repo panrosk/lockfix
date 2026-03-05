@@ -4,7 +4,7 @@ use chrono::Utc;
 use rayon::prelude::*;
 
 use super::model::{PackageInstance, PackagePlan, Plan, PlanSummary, PlannedAction, ProjectPlan};
-use crate::config::{Config, ConfigError, DependencyScope, UpdatePolicy};
+use crate::config::{Config, ConfigError, DependencyScope, DependencyType, UpdatePolicy};
 use crate::package_manager::package_json::PackageJson;
 use crate::package_manager::{LockfileDriver, PackageManagerKind, Version};
 
@@ -65,12 +65,19 @@ pub fn run(config_path: &str) -> Result<Plan, ConfigError> {
                 ));
             }
 
-            if !pm.has_lockfile(&project_path) {
-                return Err(ConfigError::LockfileNotFound {
+            if !pm.has_manifest(&project_path) {
+                return Err(ConfigError::ManifestNotFound {
                     project: project.name.clone(),
-                    lockfile: pm.lockfile_name().to_string(),
+                    manifest: pm.manifest_name().to_string(),
                 });
             }
+
+            pm.ensure_lockfile(&project_path)
+                .map_err(|e| ConfigError::LockfileGenerate {
+                    project: project.name.clone(),
+                    lockfile: pm.lockfile_name().to_string(),
+                    message: e.to_string(),
+                })?;
 
             let pkg_json = PackageJson::from_path(&project_path)
                 .map_err(|e| ConfigError::ManifestRead(e.to_string()))?;
@@ -92,13 +99,22 @@ pub fn run(config_path: &str) -> Result<Plan, ConfigError> {
                         .get_version(&project_path, &pkg.name)
                         .map(|v| v.to_string());
 
-                    let scope = if pkg_json.get_version(&pkg.name).is_some() {
+                    let detected_scope = if pkg_json.get_version(&pkg.name).is_some() {
                         DependencyScope::Direct
                     } else if !instances.is_empty() {
                         DependencyScope::Transitive
                     } else {
                         DependencyScope::Auto
                     };
+
+                    let scope = match pkg.scope {
+                        DependencyScope::Auto => detected_scope,
+                        _ => pkg.scope.clone(),
+                    };
+
+                    let dependency_type = pkg_json
+                        .get_dependency_type(&pkg.name)
+                        .unwrap_or(DependencyType::Dependency);
 
                     let action = if instances.is_empty() {
                         PlannedAction::Add
@@ -140,7 +156,7 @@ pub fn run(config_path: &str) -> Result<Plan, ConfigError> {
                         update_policy: pkg.update_policy.clone(),
                         action,
                         scope,
-                        dependency_type: pkg.dependency_type.clone(),
+                        dependency_type,
                         required: pkg.required,
                         reason: pkg.reason.clone(),
                         instances,

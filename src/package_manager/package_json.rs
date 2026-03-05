@@ -70,6 +70,42 @@ impl PackageJson {
         })
     }
 
+    /// Returns the dependency type for a package based on which bucket it's in.
+    /// Returns None if the package is not a direct dependency.
+    pub fn get_dependency_type(&self, name: &str) -> Option<crate::config::DependencyType> {
+        use crate::config::DependencyType;
+
+        if self
+            .dependencies
+            .as_ref()
+            .is_some_and(|m| m.contains_key(name))
+        {
+            return Some(DependencyType::Dependency);
+        }
+        if self
+            .dev_dependencies
+            .as_ref()
+            .is_some_and(|m| m.contains_key(name))
+        {
+            return Some(DependencyType::DevDependency);
+        }
+        if self
+            .peer_dependencies
+            .as_ref()
+            .is_some_and(|m| m.contains_key(name))
+        {
+            return Some(DependencyType::PeerDependency);
+        }
+        if self
+            .optional_dependencies
+            .as_ref()
+            .is_some_and(|m| m.contains_key(name))
+        {
+            return Some(DependencyType::OptionalDependency);
+        }
+        None
+    }
+
     pub fn set_version(&mut self, name: &str, version: &str) -> bool {
         let buckets = [
             &mut self.dependencies,

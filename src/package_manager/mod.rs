@@ -101,16 +101,6 @@ pub struct AuthConfig {
     pub auth_type: String,
 }
 
-pub struct ApplyContext<'a> {
-    pub project_path: &'a Path,
-    pub package: &'a str,
-    pub target_version: &'a str,
-    pub dependency_type: DependencyType,
-    pub update_policy: UpdatePolicy,
-    pub scope: DependencyScope,
-    pub auth_config: Option<AuthConfig>,
-}
-
 #[derive(Debug, Clone)]
 pub struct ApplyResult {
     pub package: String,
@@ -125,6 +115,34 @@ pub struct ApplyResult {
     pub error_reason: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PackageUpdateRequest {
+    pub package: String,
+    pub target_version: String,
+    pub dependency_type: DependencyType,
+    pub update_policy: UpdatePolicy,
+    pub scope: DependencyScope,
+}
+
+#[derive(Debug, Clone)]
+pub struct BatchApplyResult {
+    pub results: Vec<ApplyResult>,
+    pub audit_fix_ran: bool,
+    pub audit_fix_success: bool,
+    pub direct_installs_ran: bool,
+    pub recovery_ran: bool,
+    pub node_modules_deleted: bool,
+    pub lockfile_deleted: bool,
+}
+
+impl BatchApplyResult {
+    pub fn all_success(&self) -> bool {
+        self.results
+            .iter()
+            .all(|r| r.final_status == ApplyStatus::Success)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApplyStatus {
     Success,
@@ -134,11 +152,12 @@ pub enum ApplyStatus {
 }
 
 pub trait ApplyDriver {
-    fn apply_update(&self, ctx: &ApplyContext) -> Result<ApplyResult, ApplyError>;
-
-    fn audit_fix(&self, project_path: &Path) -> Option<Result<(), ApplyError>>;
-
-    fn supports_audit_fix(&self) -> bool;
+    fn apply_project_updates(
+        &self,
+        project_path: &Path,
+        packages: &[PackageUpdateRequest],
+        auth_config: Option<&AuthConfig>,
+    ) -> Result<BatchApplyResult, ApplyError>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -218,11 +237,27 @@ impl PackageManagerKind {
         }
     }
 
+    pub fn manifest_name(&self) -> &str {
+        match self {
+            Self::Npm(n) => n.manifest_name(),
+            Self::Yarn(y) => y.manifest_name(),
+            Self::Pnpm(p) => p.manifest_name(),
+        }
+    }
+
     pub fn lockfile_name(&self) -> &str {
         match self {
             Self::Npm(n) => n.lockfile_name(),
             Self::Yarn(y) => y.lockfile_name(),
             Self::Pnpm(p) => p.lockfile_name(),
+        }
+    }
+
+    pub fn has_manifest(&self, project_path: &Path) -> bool {
+        match self {
+            Self::Npm(n) => n.has_manifest(project_path),
+            Self::Yarn(y) => y.has_manifest(project_path),
+            Self::Pnpm(p) => p.has_manifest(project_path),
         }
     }
 
@@ -239,6 +274,14 @@ impl PackageManagerKind {
             Self::Npm(n) => n.is_installed(),
             Self::Yarn(y) => y.is_installed(),
             Self::Pnpm(p) => p.is_installed(),
+        }
+    }
+
+    pub fn ensure_lockfile(&self, project_path: &Path) -> Result<(), ApplyError> {
+        match self {
+            Self::Npm(n) => n.ensure_lockfile(project_path),
+            Self::Yarn(y) => y.ensure_lockfile(project_path),
+            Self::Pnpm(p) => p.ensure_lockfile(project_path),
         }
     }
 
@@ -262,27 +305,16 @@ impl LockfileDriver for PackageManagerKind {
 }
 
 impl ApplyDriver for PackageManagerKind {
-    fn apply_update(&self, ctx: &ApplyContext) -> Result<ApplyResult, ApplyError> {
+    fn apply_project_updates(
+        &self,
+        project_path: &Path,
+        packages: &[PackageUpdateRequest],
+        auth_config: Option<&AuthConfig>,
+    ) -> Result<BatchApplyResult, ApplyError> {
         match self {
-            Self::Npm(n) => n.apply_update(ctx),
-            Self::Yarn(y) => y.apply_update(ctx),
-            Self::Pnpm(p) => p.apply_update(ctx),
-        }
-    }
-
-    fn audit_fix(&self, project_path: &Path) -> Option<Result<(), ApplyError>> {
-        match self {
-            Self::Npm(n) => n.audit_fix(project_path),
-            Self::Yarn(y) => y.audit_fix(project_path),
-            Self::Pnpm(p) => p.audit_fix(project_path),
-        }
-    }
-
-    fn supports_audit_fix(&self) -> bool {
-        match self {
-            Self::Npm(n) => n.supports_audit_fix(),
-            Self::Yarn(y) => y.supports_audit_fix(),
-            Self::Pnpm(p) => p.supports_audit_fix(),
+            Self::Npm(n) => n.apply_project_updates(project_path, packages, auth_config),
+            Self::Yarn(y) => y.apply_project_updates(project_path, packages, auth_config),
+            Self::Pnpm(p) => p.apply_project_updates(project_path, packages, auth_config),
         }
     }
 }

@@ -174,3 +174,33 @@ fn test_parse_error_on_malformed_json() {
 
     assert!(config_err.to_string().contains("failed to parse config"));
 }
+
+#[test]
+fn test_package_scope_defaults_to_auto() {
+    let json = r#"{
+        "root": "/projects/myapp",
+        "fixBranchTemplate": "fix/{projectId}-vulnerabilities",
+        "baseBranch": "main",
+        "packageManager": { "npm": { "npmrcTemplate": null, "registry": null } },
+        "gitUser": null,
+        "scmConfig": null,
+        "projects": [
+            {
+                "name": "test-project",
+                "path": "services/test",
+                "packages": [
+                    {
+                        "name": "lodash",
+                        "targetVersion": "4.17.23",
+                        "updatePolicy": "exact",
+                        "required": true,
+                        "reason": "security-fix"
+                    }
+                ]
+            }
+        ]
+    }"#;
+
+    let config: Config = serde_json::from_str(json).unwrap();
+    assert_eq!(config.projects[0].packages[0].scope, DependencyScope::Auto);
+}

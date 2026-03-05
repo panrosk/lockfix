@@ -18,6 +18,16 @@ pub enum ConfigError {
     #[error("package manager '{0}' is not installed or not found on PATH")]
     PackageManagerNotInstalled(String),
 
+    #[error("project '{project}' is missing manifest '{manifest}'")]
+    ManifestNotFound { project: String, manifest: String },
+
+    #[error("project '{project}': failed to generate lockfile '{lockfile}': {message}")]
+    LockfileGenerate {
+        project: String,
+        lockfile: String,
+        message: String,
+    },
+
     #[error("project '{project}' is missing lockfile '{lockfile}'")]
     LockfileNotFound { project: String, lockfile: String },
 
@@ -90,14 +100,17 @@ impl Project {
 #[serde(rename_all = "lowercase")]
 pub enum PackageManager {
     Npm {
+        #[serde(rename = "npmrcTemplate")]
         npmrc_template: Option<String>,
         registry: Option<String>,
     },
     Yarn {
+        #[serde(rename = "yarnrcTemplate")]
         yarnrc_template: Option<String>,
         registry: Option<String>,
     },
     Pnpm {
+        #[serde(rename = "npmrcTemplate")]
         npmrc_template: Option<String>,
         registry: Option<String>,
     },
@@ -150,8 +163,8 @@ pub struct PackageTarget {
     pub name: String,
     pub target_version: String,
     pub update_policy: UpdatePolicy,
+    #[serde(default)]
     pub scope: DependencyScope,
-    pub dependency_type: DependencyType,
     pub required: bool,
     pub reason: String,
 }
@@ -163,11 +176,12 @@ pub enum UpdatePolicy {
     Minimum,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum DependencyScope {
     Direct,
     Transitive,
+    #[default]
     Auto,
 }
 
