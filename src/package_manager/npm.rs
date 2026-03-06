@@ -5,7 +5,7 @@ use std::path::Path;
 use serde::Deserialize;
 use thiserror::Error;
 
-use crate::config::{Commands, DependencyScope, DependencyType, UpdatePolicy};
+use crate::config::{Commands, DependencyScope};
 use crate::utils::run_command;
 
 use super::{
@@ -260,31 +260,19 @@ impl ApplyDriver for Npm {
             return Ok(batch_result);
         }
 
-        eprintln!("      [npm] === PHASE 3: install direct dependencies ===");
+        // package.json has already been written by the runner with the correct versions.
+        // We run npm install without --save flags so npm only reconciles the lockfile
+        // and does not rewrite package.json (which would strip fields like scripts, main, etc.).
+        eprintln!("      [npm] === PHASE 3: npm install to resolve updated package.json ===");
         batch_result.direct_installs_ran = true;
-        for pkg in &direct_packages {
-            let flag = match pkg.dependency_type {
-                DependencyType::DevDependency => "--save-dev",
-                DependencyType::PeerDependency => "--save-peer",
-                DependencyType::OptionalDependency => "--save-optional",
-                DependencyType::Dependency => "--save",
-            };
+        eprintln!("      [npm] running npm install...");
+        run_command("npm install", project_path).map_err(|e| ApplyError::CommandFailed {
+            command: e.command,
+            path: e.path,
+            message: e.message,
+        })?;
 
-            let version_spec = match pkg.update_policy {
-                UpdatePolicy::Exact => pkg.target_version.clone(),
-                UpdatePolicy::Minimum => format!(">={}", pkg.target_version),
-            };
-
-            let install_cmd = format!("npm install {}@{} {}", pkg.package, version_spec, flag);
-            eprintln!("      [npm] running: {}", install_cmd);
-            run_command(&install_cmd, project_path).map_err(|e| ApplyError::CommandFailed {
-                command: e.command,
-                path: e.path,
-                message: e.message,
-            })?;
-        }
-
-        eprintln!("      [npm] === PHASE 4: check all versions ===");
+        eprintln!("      [npm] === PHASE 5: check all versions ===");
         let all_matched = self.check_all_versions(project_path, packages);
         eprintln!("      [npm] all versions matched: {}", all_matched);
 
@@ -293,7 +281,7 @@ impl ApplyDriver for Npm {
             return Ok(batch_result);
         }
 
-        eprintln!("      [npm] === PHASE 5: recovery - delete node_modules and lockfile ===");
+        eprintln!("      [npm] === PHASE 6: recovery - delete node_modules and lockfile ===");
         batch_result.recovery_ran = true;
 
         let node_modules = project_path.join("node_modules");
@@ -310,13 +298,13 @@ impl ApplyDriver for Npm {
             batch_result.lockfile_deleted = true;
         }
 
-        eprintln!("      [npm] === PHASE 6: npm install && npm update ===");
+        eprintln!("      [npm] === PHASE 7: npm install && npm update ===");
         eprintln!("      [npm] running npm install...");
         run_command("npm install", project_path).ok();
         eprintln!("      [npm] running npm update...");
         run_command("npm update", project_path).ok();
 
-        eprintln!("      [npm] === PHASE 7: final version check ===");
+        eprintln!("      [npm] === PHASE 8: final version check ===");
         batch_result.results = self.build_final_results(project_path, packages);
 
         eprintln!("      [npm] batch apply complete");

@@ -294,14 +294,12 @@ fn apply_plan(
             project_plan.base_branch
         );
         git.checkout_and_reset(&project_plan.base_branch)?;
-        eprintln!("[git] creating branch: {}", project_plan.fix_branch);
-        git.create_and_checkout_branch(&project_plan.fix_branch)?;
+        eprintln!("[git] creating or resetting branch: {}", project_plan.fix_branch);
+        git.create_or_reset_branch(&project_plan.fix_branch)?;
 
-        eprintln!("[apply] reading package.json...");
-        let mut pkg_json = PackageJson::from_path(&project_path)?;
         let mut results = Vec::new();
-        let mut needs_commit = false;
         let mut packages_to_update: Vec<PackageUpdateRequest> = Vec::new();
+        let mut pkg_json = PackageJson::from_path(&project_path)?;
 
         for pkg in &project_plan.packages {
             match &pkg.action {
@@ -344,8 +342,6 @@ fn apply_plan(
                         pkg.action
                     );
                     pkg_json.set_version(&pkg.name, &pkg.target_version);
-                    needs_commit = true;
-
                     packages_to_update.push(PackageUpdateRequest {
                         package: pkg.name.clone(),
                         target_version: pkg.target_version.clone(),
@@ -358,6 +354,12 @@ fn apply_plan(
         }
 
         if !packages_to_update.is_empty() {
+            // Write package.json with updated versions before running the package manager.
+            // This ensures npm sees the correct versions without using --save flags,
+            // which would cause npm to normalize and potentially strip fields from package.json.
+            eprintln!("[apply] writing package.json with updated versions...");
+            pkg_json.write(&project_path)?;
+
             eprintln!(
                 "[apply] applying {} package updates in batch...",
                 packages_to_update.len()
@@ -365,11 +367,6 @@ fn apply_plan(
             let batch_result =
                 pm.apply_project_updates(&project_path, &packages_to_update, None)?;
             results.extend(batch_result.results);
-        }
-
-        if needs_commit {
-            eprintln!("[apply] writing package.json...");
-            pkg_json.write(&project_path)?;
         }
 
         let project_summary = ProjectSummary {
@@ -380,7 +377,7 @@ fn apply_plan(
 
         let all_success = project_summary.all_success();
 
-        if all_success && needs_commit {
+        if all_success && !packages_to_update.is_empty() {
             let commit_message = format!("fix: update dependencies for {}", project_plan.name);
             eprintln!("[git] staging and committing...");
             git.stage_and_commit(&commit_message)?;
@@ -421,7 +418,7 @@ fn apply_plan(
         }
 
         summary.projects.push(ProjectSummary {
-            committed: all_success && needs_commit,
+            committed: all_success && !packages_to_update.is_empty(),
             ..project_summary
         });
     }

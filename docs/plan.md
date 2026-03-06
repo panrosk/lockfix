@@ -63,8 +63,7 @@ The `action` field is the core output of the plan. It determines what the apply 
 | Action | Description |
 |--------|-------------|
 | `update` | Package exists and needs to be upgraded |
-| `add` | Package is not installed, will be added |
-| `skip` | Package already satisfies requirements, no action needed |
+| `skip` | Package already satisfies requirements, or not installed in project |
 | `error` | Invalid configuration (e.g., downgrade with exact policy) |
 | `pending` | Cannot determine action without inspecting project first |
 
@@ -78,11 +77,11 @@ The `action` field is the core output of the plan. It determines what the apply 
          ┌────────┴────────┐
          │                 │
         Yes               No
-         │                 │
-         ▼                 ▼
-┌─────────────────┐  ┌─────────────┐
-│ Check versions  │  │ action: add │
-└────────┬────────┘  └─────────────┘
+          │                 │
+          ▼                 ▼
+┌─────────────────┐  ┌──────────────┐
+│ Check versions  │  │ action: skip │
+└────────┬────────┘  └──────────────┘
          │
          ▼
 ┌─────────────────────────────────────┐
@@ -174,7 +173,7 @@ The `scope` field indicates where the package is declared:
 |-------|-------------|
 | `direct` | Listed in `package.json` dependencies/devDependencies |
 | `transitive` | Not in manifest, but present in lockfile (dependency of dependency) |
-| `auto` | Not found anywhere (will need to be added) |
+| `auto` | Not found anywhere (will be skipped) |
 
 Detection logic:
 1. Check if package exists in `package.json` → `direct`

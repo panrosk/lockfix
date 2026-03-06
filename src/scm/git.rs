@@ -100,6 +100,26 @@ impl Git {
         Ok(())
     }
 
+    /// Create a branch from the current HEAD, or if it already exists reset it hard to current HEAD.
+    /// This ensures the fix branch is always a clean slate on top of the target branch.
+    pub fn create_or_reset_branch(&self, branch_name: &str) -> Result<(), GitError> {
+        let head_commit = self.repo.head()?.peel_to_commit()?;
+        let branch_ref = format!("refs/heads/{branch_name}");
+
+        if let Ok(mut reference) = self.repo.find_reference(&branch_ref) {
+            // Branch already exists — reset its tip to the current HEAD (target branch tip)
+            reference.set_target(head_commit.id(), "reset to target branch")?;
+        } else {
+            self.repo.branch(branch_name, &head_commit, false)?;
+        }
+
+        self.repo.set_head(&branch_ref)?;
+        self.repo
+            .checkout_head(Some(CheckoutBuilder::default().force()))?;
+
+        Ok(())
+    }
+
     /// Stage all changes and create a commit.
     pub fn stage_and_commit(&self, message: &str) -> Result<(), GitError> {
         let mut index = self.repo.index()?;

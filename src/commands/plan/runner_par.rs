@@ -117,7 +117,7 @@ pub fn run(config_path: &str) -> Result<Plan, ConfigError> {
                         .unwrap_or(DependencyType::Dependency);
 
                     let action = if instances.is_empty() {
-                        PlannedAction::Add
+                        PlannedAction::Skip
                     } else if let Some(ref current) = current_version {
                         let current_ver = Version::from(current.as_str());
                         let target_ver = Version::from(pkg.target_version.as_str());
